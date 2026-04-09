@@ -1,8 +1,5 @@
 {
   "name": "shortcut-server",
   "version": "2.0.0",
-  "private": true,
-  "dependencies": {
-    "@vercel/blob": "^0.23.0"
-  }
+  "private": true
 }
