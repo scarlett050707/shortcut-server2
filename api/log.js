@@ -1,18 +1,18 @@
 // api/log.js
-// iOS快捷指令调用这个接口上报App活动
-// 支持 GET /api/log?app=小红书  （最简单，快捷指令直接用URL请求）
-// 支持 POST /api/log  body: { appName: "小红书" }
+// 快捷指令调用这个接口，告诉服务器你打开了哪个App
+// 用法超简单：在Safari或快捷指令里访问
+// https://你的域名.vercel.app/api/log?app=小红书
 
-const { kv } = require('@vercel/kv');
+import { put, list, del } from '@vercel/blob';
 
 export default async function handler(req, res) {
-  // 允许跨域（网页轮询需要）
+  // 允许网页跨域访问
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // 获取 appName
+  // 获取App名字（支持两种方式传入）
   let appName = req.query.app || req.query.appName;
   if (!appName && req.method === 'POST') {
     try {
@@ -22,22 +22,40 @@ export default async function handler(req, res) {
   }
 
   if (!appName) {
-    return res.status(400).json({ error: 'appName required. Use ?app=小红书 or POST {appName:"小红书"}' });
+    return res.status(400).json({ 
+      error: '需要告诉我App名字！',
+      用法: '在网址后面加 ?app=小红书 就行了'
+    });
   }
 
-  const event = {
-    appName: String(appName).slice(0, 50),
-    timestamp: Date.now(),
-  };
+  const ts = Date.now();
+  const event = { appName: String(appName).slice(0, 50), timestamp: ts };
 
-  // 存入 KV，key = event:时间戳，TTL = 7天
   try {
-    await kv.set(`event:${event.timestamp}`, JSON.stringify(event), { ex: 60 * 60 * 24 * 7 });
-  } catch(e) {
-    console.error('KV write error:', e);
-    return res.status(500).json({ error: 'Storage failed', detail: e.message });
-  }
+    // 把这条活动记录存成一个小文件
+    // 文件名格式：events/时间戳.json
+    await put(
+      `events/${ts}.json`,
+      JSON.stringify(event),
+      { access: 'public', addRandomSuffix: false }
+    );
 
-  console.log('[log]', event);
-  return res.status(200).json({ ok: true, received: event });
+    // 顺便清理7天前的旧记录（不清理也没事，只是省空间）
+    const cutoff = ts - 7 * 24 * 60 * 60 * 1000;
+    try {
+      const old = await list({ prefix: 'events/' });
+      const toDelete = (old.blobs || []).filter(b => {
+        const fileTs = parseInt(b.pathname.replace('events/', '').replace('.json', ''));
+        return fileTs < cutoff;
+      });
+      await Promise.all(toDelete.map(b => del(b.url)));
+    } catch(e) { /* 清理失败不影响主流程 */ }
+
+    console.log('[记录]', event);
+    return res.status(200).json({ ok: true, received: event });
+
+  } catch(e) {
+    console.error('存储失败:', e);
+    return res.status(500).json({ error: '存储失败', detail: e.message });
+  }
 }
